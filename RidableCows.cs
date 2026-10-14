@@ -13,7 +13,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("RidableCows", "Lucien", "1.3.1")]
+    [Info("RidableCows", "Lucien", "1.3.2")]
     [Description("Ride cows bareback like horses: driver and passenger, stamina, ramming, bull charges, and the game's horse HUD via a hidden carrier horse")]
     public class RidableCows : RustPlugin
     {
@@ -66,7 +66,10 @@ namespace Oxide.Plugins
             public float CarrierHideDelay = 0.75f;
 
             [JsonProperty("Stop: deceleration when the driver lets go (m/s^2)")]
-            public float StopDeceleration = 6f;
+            public float StopDeceleration = 3f;
+
+            [JsonProperty("Reverse: speed walking backwards with S (m/s)")]
+            public float ReverseSpeed = 0.8f;
 
             [JsonProperty("Stop: play one of the cow's own idle clips once it has stopped")]
             public bool IdleClipOnStop = true;
@@ -291,7 +294,8 @@ namespace Oxide.Plugins
             public Vector3 RearSpot;            // the passenger's spot: the config's, pushed back behind a carrier saddle
             public Vector3 LastCowPos;
             // stopping: brake to a halt, then an idle clip (which pauses the agent until the driver moves again)
-            public bool Stopping;
+            public bool Stopping, Reversing;
+            public float RampSpeed;
             public RustNavMeshAgent.Speeds LastGait = RustNavMeshAgent.Speeds.Jog;
             public RootMotionPlayer.PlayServerState Idle;
             // rider tricks: a kick (double-tap Ctrl) and a moo (R)
@@ -784,8 +788,10 @@ namespace Oxide.Plugins
 
         private static void ReleaseCow(Ride ride)
         {
+            EndReverse(ride);
             var cow = ride.Cow;
             if (cow == null || cow.IsDestroyed || cow.IsDead()) return;
+            if (ride.Agent != null) ride.Agent.canSteer = true;
             ride.Agent?.ResetPath();
             ride.Fsm?.SetFsmActive(true);
         }
@@ -1082,7 +1088,13 @@ namespace Oxide.Plugins
 
             int turn = ((keys & Keys.Right) != 0 ? 1 : 0) - ((keys & Keys.Left) != 0 ? 1 : 0);
             bool forward = (keys & Keys.Forward) != 0 && (keys & Keys.Back) == 0;
+            bool back = (keys & Keys.Back) != 0 && (keys & Keys.Forward) == 0;
             bool faster = (keys & Keys.Faster) != 0;
+            if (back && _config.ReverseSpeed > 0f)
+            {
+                Reverse(ride, turn, dt);
+                return;
+            }
             // A/D swing the heading, but only so far ahead of the cow: past that it would chase a target
             // behind it and wobble. The cow detouring round a rock never drags the heading back.
             if (turn != 0)
@@ -1105,7 +1117,8 @@ namespace Oxide.Plugins
                 return;
             }
             ClearIdle(ride);   // an idle clip pauses the agent; the driver wants to move
-            ride.Stopping = false;
+            EndReverse(ride);
+            if (ride.Stopping) { ride.Stopping = false; ride.Agent.canSteer = true; }
 
             var fastest = ParseGait(_config.FastGait, RustNavMeshAgent.Speeds.Sprint);
             var cruise = ParseGait(_config.CruiseGait, RustNavMeshAgent.Speeds.Jog);
@@ -1159,30 +1172,53 @@ namespace Oxide.Plugins
 
         // The driver let go: ease to a halt (a path cut dead makes the client's animator lurch), then settle
         // with one of the cow's own idle clips, as its state machine does on arrival
+        private static void EndReverse(Ride ride)
+        {
+            if (!ride.Reversing) return;
+            ride.Reversing = false;
+            if (ride.Agent != null) ride.Agent.canSteer = true;
+        }
+
         private void SoftStop(Ride ride)
         {
+            EndReverse(ride);
             if (ride.Moving)
             {
-                float v = CurrentSpeed(ride);
-                float d = Mathf.Clamp(v * v / (2f * _config.StopDeceleration), 0.8f, 6f);
-                Vector3 target = ride.Cow.transform.position + ride.Cow.transform.forward * d;
-                bool ok = ride.Agent.SamplePosition(target, out UnityEngine.AI.NavMeshHit hit, 2f, false)
-                          && ride.Agent.SetDestinationWithParams(hit.position, autoBraking: true, gait: ride.LastGait, deceleration: _config.StopDeceleration);
-                if (!ok) ride.Agent.ResetPath();
+                // The driver let go: ramp the speed down ourselves. Asking the agent to brake to a point a metre
+                // or two ahead does not work (it counts a target that close as reached and halts dead), so the
+                // path is dropped and the cow is moved along the mesh each tick at a decaying speed, steering
+                // off so the agent does not swing it about. The client animates from the velocity, so it eases.
+                ride.RampSpeed = Mathf.Max(CurrentSpeed(ride), 0.3f);
+                ride.Agent.ResetPath();
+                ride.Agent.canSteer = false;
                 ride.Moving = false;
-                ride.Stopping = ok;
+                ride.Stopping = true;
             }
-            else if (ride.Stopping && !ride.Agent.hasPath)
+            else if (ride.Stopping)
             {
-                ride.Stopping = false;
-                if (_config.IdleClipOnStop) PlayIdle(ride);
+                ride.RampSpeed = Mathf.Max(0f, ride.RampSpeed - _config.StopDeceleration * TickInterval);
+                var t = ride.Cow.transform;
+                if (ride.RampSpeed > 0f && !ride.Agent.IsPaused)
+                {
+                    Vector3 from = t.position;
+                    Vector3 to = from + t.forward * (ride.RampSpeed * TickInterval);
+                    ride.Agent.Move(ride.Agent.WorldToNavSpace(to) - ride.Agent.WorldToNavSpace(from));
+                }
+                else
+                {
+                    ride.Stopping = false;
+                    ride.Agent.canSteer = true;
+                    if (_config.IdleClipOnStop) PlayIdle(ride);
+                }
             }
             ride.Gait = "Stop";
         }
 
         private static void HardStop(Ride ride)
         {
+            EndReverse(ride);
             ride.Agent.ResetPath();
+            ride.Agent.canSteer = true;
             ride.Moving = false;
             ride.Stopping = false;
             ride.Gait = "Stop";
@@ -1204,6 +1240,31 @@ namespace Oxide.Plugins
             if (ride.Anim != null) ride.Anim.StopServerAndReturnToPool(ref ride.Idle, interrupt: ride.Idle.isPlaying);
             ride.Idle = null;
         }
+
+        // S: back up. Cows have no reverse gait on the navmesh, so the agent is moved straight backwards along the
+        // mesh without a path, and A/D turn it on the spot
+        private void Reverse(Ride ride, int turn, float dt)
+        {
+            ClearIdle(ride);
+            if (ride.Moving || ride.Stopping) { ride.Agent.ResetPath(); ride.Moving = false; ride.Stopping = false; }
+            if (!ride.Reversing) { ride.Reversing = true; ride.Agent.canSteer = false; }   // steering would swing it round to face the move
+            var t = ride.Cow.transform;
+            if (turn != 0)
+            {
+                t.rotation = Quaternion.Euler(0f, t.eulerAngles.y + turn * _config.TurnRate * 0.6f * dt, 0f);
+            }
+            ride.Heading = t.eulerAngles.y;
+            if (!ride.Agent.IsPaused)
+            {
+                Vector3 from = t.position;
+                Vector3 to = from - t.forward * (_config.ReverseSpeed * dt);
+                ride.Agent.Move(ride.Agent.WorldToNavSpace(to) - ride.Agent.WorldToNavSpace(from));
+            }
+            ride.Gait = "Reverse";
+        }
+
+
+
 
         private static RustNavMeshAgent.Speeds ParseGait(string name, RustNavMeshAgent.Speeds fallback) =>
             Enum.TryParse(name, true, out RustNavMeshAgent.Speeds gait) ? gait : fallback;
@@ -1227,6 +1288,7 @@ namespace Oxide.Plugins
                 case "Kick": change = 0f; break;
                 case "Stop":
                 case "Blocked": change = 2f * dt / _config.RecoverSeconds; break;
+                case "Reverse": change = dt / _config.RecoverSeconds; break;
                 default: change = dt / _config.RecoverSeconds; break;
             }
             ride.Stamina = Mathf.Clamp01(ride.Stamina + change);
@@ -1804,6 +1866,13 @@ namespace Oxide.Plugins
                 Reply(player, $"Carrier horse offset now {lift:0.0} m ({(lift < 0 ? "under the ground" : "above the cow")}); applies to the next mount.");
                 return;
             }
+            if (args.Length >= 3 && args[0].ToLower() == "config" && args[1].ToLower() == "decel" && float.TryParse(args[2], out float decel) && decel > 0f)
+            {
+                _config.StopDeceleration = decel;
+                SaveConfig();
+                Reply(player, $"Stop deceleration now {decel:0.0} m/s² (a jog eases out over {3.16f * 3.16f / (2f * decel):0.0} m).");
+                return;
+            }
             if (args.Length >= 1 && args[0].ToLower() == "spawn")
             {
                 if (!Physics.Raycast(player.eyes.HeadRay(), out RaycastHit hit, 30f, LayerMask.GetMask("Terrain", "World", "Construction", "Default")))
@@ -1821,7 +1890,7 @@ namespace Oxide.Plugins
                 Reply(player, $"{_iconIds.Count} custom icon(s) loaded and sent to everyone's cache: {string.Join(", ", _iconIds.Keys)}. Give it a few seconds, then /ridablecow pie.");
                 return;
             }
-            Reply(player, $"Ride method is {_config.RideMethod} ({MethodName(_config.RideMethod)}).\n/ridablecow config method 1|2  (1 = seats on the cow with the plugin's bars, 2 = hidden carrier horse with the game's horse bars; applies to the next mount)\n/ridablecow config lift <m> · /ridablecow spawn [bull] · /ridablecow reload icons");
+            Reply(player, $"Ride method is {_config.RideMethod} ({MethodName(_config.RideMethod)}).\n/ridablecow config method 1|2  (1 = seats on the cow with the plugin's bars, 2 = hidden carrier horse with the game's horse bars; applies to the next mount)\n/ridablecow config lift <m> · /ridablecow config decel <m/s²> · /ridablecow spawn [bull] · /ridablecow reload icons");
         }
 
         private static string MethodName(int method) => method == 2 ? "carrier horse, game's horse bars" : "saddle seats, plugin bars";
@@ -2190,16 +2259,25 @@ namespace Oxide.Plugins
                     {
                         float turned = Mathf.Abs(Mathf.DeltaAngle(yaw0, _cow.transform.eulerAngles.y));
                         Check("A/D steers the cow", turned > 45f, $"turned {turned:0} deg");
-                        Drive(Keys.Back, 1.5f, () =>
+                        Vector3 released = _cow.transform.position;
+                        Drive(Keys.None, 2.5f, () =>
                         {
+                            float eased = Vector3.Distance(released.WithY(0f), _cow.transform.position.WithY(0f));
+                            Check("letting go eases the cow to a halt (not a dead stop)", eased > 0.4f && eased < 6f, $"rolled on {eased:0.00} m after release");
                             Vector3 stopped = _cow.transform.position;
                             _p.timer.Once(1f, () =>
                             {
                                 float drift = Vector3.Distance(stopped, _cow.transform.position);
-                                Check("S stops the cow", drift < 0.5f, $"drifted {drift:0.00} m after stopping");
+                                Check("then stands still", drift < 0.3f, $"drifted {drift:0.00} m");
                                 var rr = RideOf();
                                 Check("stopped cow settles with an idle clip", !_p._config.IdleClipOnStop || (rr != null && rr.Idle != null), $"idle playing {rr?.Idle != null && rr.Idle.isPlaying}");
-                                Charge();
+                                Vector3 before = _cow.transform.position; Vector3 fwd = _cow.transform.forward;
+                                Drive(Keys.Back, 2f, () =>
+                                {
+                                    float backed = Vector3.Dot(before - _cow.transform.position, fwd);
+                                    Check("S backs the cow up", backed > 0.6f, $"moved {backed:0.00} m backwards in 2 s");
+                                    Charge();
+                                });
                             });
                         });
                     });

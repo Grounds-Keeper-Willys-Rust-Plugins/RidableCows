@@ -4,7 +4,7 @@ Lets players ride Rust's farm cows and bulls bareback, the way they ride horses:
 the normal movement keys, and a second player can get on behind as a **passenger**. The cow walks, jogs,
 runs or sprints with its own animations, tires like a horse, hurts what it runs into, and charges on
 command, kicks and moos on request. Two ride methods: the game's own horse bars via a hidden carrier
-horse (default), or saddle seats on the cow with the plugin's own display. Version 1.3.1.
+horse (default), or saddle seats on the cow with the plugin's own display. Version 1.3.2.
 
 1. [Installing, and where the files are](#1-installing-and-where-the-files-are)
 2. [What players experience](#2-what-players-experience)
@@ -24,7 +24,7 @@ horse (default), or saddle seats on the cow with the plugin's own display. Versi
 and tested on Rust build 2634 with Oxide 2.0.7801. Carbon is untested.
 
 1. Copy `RidableCows.cs` into `oxide/plugins/`.
-2. The console shows `Loaded plugin RidableCows v1.3.1`.
+2. The console shows `Loaded plugin RidableCows v1.3.2`.
 3. Copy the `icons/` folder from this repository to `oxide/data/RidableCows/icons/` for the pie wheel
    icons, or put your own PNGs there (section 3). Without them the wheel falls back to sprite paths.
 
@@ -62,7 +62,7 @@ per km²); admins can add more with `/cow spawn` and `/cow spawn bull`.
 | **W + Shift** | Faster (sprint) |
 | **W + Ctrl** | Slower (walk) |
 | **A / D** | Turn; on their own, turn on the spot |
-| **S** | Stop |
+| **S** | Back up (slowly); with A/D, turn while backing |
 | **Shift** near something in front | **Charge** it (section below) |
 | **Ctrl, double-tapped** | **Kick** what is in front (the cow stops to do it) |
 | **R** | **Moo** |
@@ -103,9 +103,10 @@ standing still it plays in full, on the move the cow keeps walking under it.
 
 ### Stopping
 
-Let go of W (or press S) and the cow eases to a halt over a metre or so rather than freezing mid-stride,
-then settles with one of its own idle clips (a breath, a look round, a moo). Pressing W again moves off
-at once.
+Let go of W and the cow eases to a halt instead of freezing mid-stride: its speed ramps down at the
+configured deceleration (a jog takes about a metre), then it settles with one of its own idle clips (a
+breath, a look round, a moo). Pressing W again moves off at once. **S** backs the cow up at a slow walk;
+cows have no reverse gait, so it slides back in its standing pose.
 
 When the driver gets off, the passenger stays on and the cow stands still until someone takes the
 front. Riders are always put down on the ground beside the cow, never killed for a lack of space
@@ -147,11 +148,14 @@ front. Riders are always put down on the ground beside the cow, never killed for
   display uses the game's **custom vitals** channel (`CommunityEntity.SendCustomVitals`): the client
   draws the entries itself in its status list, and the plugin only sends new values when they change.
   The CUI panel is kept as an alternative.
-- **Stopping:** letting go sets a short braking target (stopping distance from the current speed and
-  the configured deceleration, 0.8 to 6 m) with the agent's own braking, instead of cutting the path
-  dead: a dead cut leaves the client's animator with no deceleration to blend and it lurches. Once
-  stopped, one of the clips from the cow's own `randomIdle` list is played (it pauses the agent until
-  the driver moves again).
+- **Stopping:** letting go drops the path and moves the cow along the navmesh itself each tick at a
+  speed that decays at the configured deceleration, with the agent's steering switched off so it does
+  not swing the cow about. (Asking the agent to brake to a point a metre or two ahead does not work:
+  it counts a target that close as already reached and halts dead, which leaves the client's animator
+  nothing to blend and it lurches.) At zero, one of the clips from the cow's own `randomIdle` list is
+  played; it pauses the agent until the driver moves again.
+- **Backing up** uses the same mesh move in the other direction, steering off, with A/D turning the cow
+  on the spot.
 - **Charging** plays the cow's own `headbutt` root-motion animation (`cow_attack_charge`, 1.6 s, the blow
   authored at 0.7 s) through the game's `RootMotionPlayer`, which pauses the agent and moves the cow
   along the animation. The blow is a radius sweep rather than a cone: the lunge carries the cow a few
@@ -192,7 +196,8 @@ front. Riders are always put down on the ground beside the cow, never killed for
 | Carrier horse: vertical offset from the cow | `3` | Metres. Its body must never overlap the cow (that shoves the cow on the client at every stop). 3 m above is proven; 20 m under the ground left the client unmounted. `/ridablecow config lift`. |
 | Carrier horse: where the rider sits on the cow | `(0, -0.2, -0.6)` | Cow-local metres, before the lift. |
 | Carrier horse: seconds after mounting before it is hidden | `0.75` | |
-| Stop: deceleration when the driver lets go | `6` | m/s². |
+| Stop: deceleration when the driver lets go | `3` | m/s²; `/ridablecow config decel`. |
+| Reverse: speed walking backwards with S | `0.8` | m/s; `0` turns S into a plain stop. |
 | Stop: play one of the cow's own idle clips once it has stopped | `true` | |
 | Key that mounts the cow you are looking at | `USE` | Any Rust `BUTTON` name, e.g. `RELOAD` if E clashes with Lead/Milk. |
 | Hold the mount key this long for the Lead / Ride wheel | `0.35` | Seconds. |
@@ -260,6 +265,7 @@ Server admins have both.
 | `/cow tilt <scale>` | admin | Seat tilt scale (0 level, 1 with the ground); saved to config |
 | `/ridablecow config method 1\|2` | admin | Switch the ride method (saved to config); `/ridablecow` alone shows it |
 | `/ridablecow config lift <m>` | admin | Carrier horse offset (saved to config); applies to the next mount |
+| `/ridablecow config decel <m/s²>` | admin | How hard the cow brakes when the driver lets go (saved to config) |
 | `/ridablecow spawn [bull]` | admin | Spawn an adult cow or bull where you look |
 | `/ridablecow reload icons` | admin | Re-read the icon PNGs and send them to everyone's cache |
 | `ridablecows.method 1\|2` | server console | Console twin of the method switch |
@@ -289,8 +295,9 @@ faces the most open ground, so the result doesn't depend on the spot. Everything
 afterwards. Under method 2 it also checks the carrier horse (spawned kinematic and frozen, carried
 above the cow unparented, the driver on its saddle at the cow's back, hidden after the mount, following
 the cow within centimetres, its bars reading the cow's health and the ride's stamina, removed with the
-ride), and under both methods that the stopped cow settles with an idle clip. Last run on build 2634:
-method 2, 39 passed, 0 failed; method 1, 34 passed, 0 failed.
+ride), and under both methods that letting go eases the cow to a halt, that it then stands still and
+settles with an idle clip, and that S backs it up. Last run on build 2634: method 2, 41 passed, 0
+failed; method 1, 36 passed, 0 failed.
 
 `ridablecows.selftest hold` stops with two bots riding, so you can reload the plugin and check that the
 riders are put down and the seats removed; `ridablecows.selftest cleanup` removes the test cow and bots
@@ -317,7 +324,8 @@ cow_stand_attack_kick` (1.5 s, damage 15, delay 0.5) and `warn = cow_stomp`.
   "Hold the mount key this long" if they fight.
 - **Icons** are limited to sprite paths the client can load; the defaults are the only ones the server
   can prove exist. Swap them in the config once you find better ones.
-- **S stops, it doesn't reverse.** Cows have no walk-backwards animation.
+- **Backing up has no animation.** Cows have no walk-backwards clip, so S slides the cow back in its
+  standing pose.
 - **Ramming needs the cow to reach the target.** Players and animals don't block the navmesh, so a
   ridden cow runs straight through them. Buildings the navmesh routes around are not run into at all
   (the hint shows `Blocked`); charge them instead.
