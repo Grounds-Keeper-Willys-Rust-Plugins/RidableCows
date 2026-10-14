@@ -13,7 +13,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("RidableCows", "Lucien", "1.3.2")]
+    [Info("RidableCows", "Lucien", "1.3.3")]
     [Description("Ride cows bareback like horses: driver and passenger, stamina, ramming, bull charges, and the game's horse HUD via a hidden carrier horse")]
     public class RidableCows : RustPlugin
     {
@@ -895,6 +895,79 @@ namespace Oxide.Plugins
         // wheel by id; the client fetches them from the server. A slice without a file uses its sprite path.
         private string IconDir => Path.Combine(Interface.Oxide.DataDirectory, "RidableCows", "icons");
 
+        // The shipped icons (128x128 PNG, white on transparent), written to the icons folder when a file is
+        // missing so there is always a full set and an admin can see what to replace
+        private static readonly Dictionary<string, string> DefaultIcons = new Dictionary<string, string>
+        {
+            ["ride"] =
+                "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAEt0lEQVR4nO2d25LcIAxE7VT+/5edh9mpOM6MLaFbC/q8bo25dCNA" +
+                "Bu+2EUIIIYQQQtZir66AN8dxHN/+tu/7dO218qu6Ap7ciS/5+4pMMyK04jIavJgiAnBkjzOFAUagaV4sawDyggZYHBpgcWiAxaEB" +
+                "FocGWBwaYHGmMMBIVo+ZwBdTGGBTCkrx/9KuI84ZvE9CPmX4KP6/tIoAV3E/iX0nMMX/nxYdIs3bU2A9rSLAE3zBowfeABQ1FmgD" +
+                "jIhPw+iANQCFzAHWACSHKQ3A6CFnSgMQOTTA4tAAi0MDLA4NsDg0wOL8rq7AzFy3o5KXVSO/scAIEIRXLiI6p0EDBNApEUUDNCDS" +
+                "UDTA4ky7CNSMmqyTRJ/OM1ZPF9MaQMPTQdPoMiuBPUNX2UEaEyAIaTEtDXDDyLHzarRm4BQgBF34N+96So3AXcADxw/W52TfXJLW" +
+                "mREgEcR7C4wAN3QJ+xbgtjznUYIggOd+XRoBMssKMwCCeB54G/JJmPT1hrWwK5nCj4hjmYe92vatDtbnj7TNdRE4y6g/E9Gm4ziO" +
+                "q1gV4m+eEaBKfGsUGK33vu+7pc1eBrDuLFwiwIwjX8Jd53v3SdQW0myAkYZ65trP4dQ6KqUg7udHSU0EaRc/+w/e9bCYZibxN2si" +
+                "yNpxT2lWxKnFIzX8qS+qjGUqNGvRpe0czy3hXXRC+t0owxFAI+RxIrosTyrKzY4ES78LQJx+sssdMgDi3HwGYaEWle3zZukI0IVI" +
+                "Q7cwQOS3gJHWJRXRAf5AiDZplHma5un41bccA9I0ABkB9hPa31Yd8Y4SdbnLoaMNtgjgeZETaXRLcDOA1amWtK/kI9KZeJa/xO1g" +
+                "i/Ben4evmDoQKF8EdruFI8VrQRpNaQSQ5uJH5taRER0RBdBNUGYAyUuR6hGPIF50HdxW3Jr36lUnaSTP9kogeRz5yjBgegTIFH+E" +
+                "jNPFkmdnRZ+0RWDGefhsPNPNVdNNSgSoFB95e2fJeHoBkQcgdZQbIDP0V0wz2Ue8tLgaIOrsHomjPBNoBe02cTfKpoCIW7DVC6or" +
+                "HQxZvgYgtUxpAIQocDf6Eer3prUBJJ2s7WwkcTJobYAN5KXRFbT63AH7NlDLtxdUnmXMiNoAnu6OMEH16KsuX4vaAN6iReTDV7nW" +
+                "5YE6ERTZyG9XyEeelX0kq6P4mzYCVN2W9bgjEElX8TdNBEBo5NsECHXZgE/5aBAZILrDUQSV0KmuEkpfBiF3JnLdPGn9Mgi5vC6U" +
+                "GABVDLT5OYN0A6CKv4HXLYrUNQD6FWpGgIbMkEGsRGQA1JERkZb2fF4HXCPAaGIEseMj6oXYTrEBrJVfMbx2QBUBEB1MbKh3AZpb" +
+                "wN2YtV13DK0BuO3qXfczw3mAiAVS1AiMzD90jxopeYDuneQFYj9AXA/PKD/jEKqkHp518IARYHHap4KJDSgDIIbI2YEyAMmn9fcB" +
+                "tEe/I04Wd98KwkUATgO5THM3sAOIkaL0G0HISO4ZagVF7B+4KWBr+AVxzw9GZgNpAAQQR2sEsAZYRYBq3A1QIVxlaH36z2HowEaA" +
+                "DaBTq8vPANoAXdBEAbSFYIgBPEdO9Qp79ijQIgJ0EqFTXQkhhBBCCCEr8ge7xhz42QtANQAAAABJRU5ErkJggg==",
+            ["lead"] =
+                "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAADn0lEQVR4nO3dyXakMBBEUdGn//+XqzeWGygGgabIzHdXXpQRkCGB" +
+                "BC6nBAAAAAAAAAAAAAAAAFeW2TuAep/P55N/XpblUU3/dNkjDLMu/ht/2+0KRqotfMYIYFCr4idGAFtaFj5jBDCiR/ETAbChtPhP" +
+                "ZwCJS4C2Xr1+jXUAUU+K/6bn//7u219EH097fU3xEwHQMqrXb7bTYiOoM7rXb7bVakN4Z0avX2MaONHs4idGgDkUCp8xAgymVPzE" +
+                "CDDOzBu9y3ZGNKLgqgC9T7Zar9+0N7Kx0WqWUlsVQrn4yXMAWq+jPy2OeuF/257VcE89H6KUFMtK8ZPHAIx4gpZOCmep8JmraeCo" +
+                "4h+1ZbH4yVMARha/pk2l4icvAZhR/L27wi4/xu1RGfMBmF38kj/KUCx8ZjoAs4tfQrn4yXIAlIp/NgqoFz9ZnQYqFX/NQsH3zI0A" +
+                "qsU/YmFfTSW21Qk9W8RZlmWpbWO97bwt5ZFBdsf2Zq7t1zzKVQ+BiUtAj6G058rd0bZVLwfyfxnU68Qd9dKrz7W4PCiSHgFGnPC7" +
+                "Nmq+fcMC2QDMfqR7ti81IVAcQeQC8Pkxqq03n71b17e0JPzqHiBPmVrthGLPOLI/7rtzYOG4HgcgH9TZwfWcXikomdZZOq7mswBL" +
+                "B19D9TXvp+TuAUYa9u69aPFT9ACkTsVZrx0oFz+9WQr2MMTXvtBZuk0LwgXAaqF6kV8K7qnFAs9dh1APXKgRoHT9v2e7akLeBFoO" +
+                "cWthAqDcC2cKEQCKf859ACj+NdcBUCi+wj5ccRuA/R2/9xc73nIZgJLpXu8QWFgGTt4Wgp7O8/cFajE9tFD0NTcLQfnEl/R49Ve1" +
+                "R3ITgDt3ATn7/BOt35QaIUQARi8BWwqBy5vA2Sx1klABsFSYUUIFAN9CBYB3AL+FCABD/7kQAVjrvUJnqfeniNPAIxFXALMu78Gp" +
+                "2S8CvV3kudq2VVI73yNYCg+GlEkeeMsgPF0Cfrpd6yRvAi2cXGuXwTOSAUgd7tYthGoG2QBktUHw0lN7kQ9A1mJEYBT4ZiYAWYsQ" +
+                "EIT/3JyIt1O8t5cILyFycRAlSt4K7vm2kCo3B3LnqLh33/Oz/3JIT4XP3B3QkZn/NVSduZtAtOU+AKwDXHMfgCvRh/8UPQAgAOG5" +
+                "DgB3//dcBwD33AaA3l/GbQBQhgAERwCCCxcArv9b4QKALQIQHAEILlwAeDq4FS4AAAAAAAAAAAAAAAAAAODXP6Xq7NZ/TdztAAAA" +
+                "AElFTkSuQmCC",
+            ["stop"] =
+                "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAACIklEQVR4nO3c3U7CQBgG4a3x/m+5HhiCIQgt3e6+X2eeQ7Rmf4Yq" +
+                "SLY1SZIkSZIkSZIkSde0zB7AO+u6ro+PLcuyedzVrz/b1+wBvPJs8V49frXrR4gN4N0iXf3ro0QGUOUZetb1I8UFsHdRHr+/+vWj" +
+                "xQWgsQwAzgDgDADOAOAMAM4A4AwAzgDgDADOAOAMAM4A4AwAzgDgDADOAOAMAM4A4AwAzgDgDADOAOAMAM4A4AwAzgDgDADOAOAM" +
+                "AM4A4AwAzgDgvnv/wFcnXiSdjqVfXe8AVQ5G0l23ACodjKS7LgFUOxhJd4cD+HQzjSCDrwLgur8KmOHo3YR8N7pEALNVDshfAXAG" +
+                "AGcAcAYAZwBwBgBnAHAGMNnsf5EbwESzN7+lBVD5HbW9Eja/pQWg8QwALiYA0u2/Bc03JgDNYQBwBgBnAHAGAGcAcAYAZwBwBgBn" +
+                "AHAGAGcAcAYAZwBwBgBnAHAGAGcAcAYAZwBwhwP49PPtKZ+Lp+tyB9i7mW5+jm6/ArZuqpufpevfAO82183P0/2UMDe5Fl8FwBkA" +
+                "nAHAGQCcAcAZAJwBwMUEQHv/IGW+MQFoDgOAiwog5bZ4tqR5RgWg8eICSHp2nCFtfnEBtMBF6iVxXpEBtNDFOiJ1PrEBtOBF2yt5" +
+                "HtEBtPDF2yJ9/PEBtAKL+J8K4y4RQCuymH9VGW+JQT5KOWj5mSobf1NqsM8kxFBt0yVJkiRJkgT0A/p41JgU5ZXFAAAAAElFTkSu" +
+                "QmCC",
+            ["milk"] =
+                "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAACLElEQVR4nO3cUU7DQBAE0TXi/lc2H4gPLIEQsd09rnon2JnUGkVJ" +
+                "WEuSJEmSJFFs6QO8Yt/3PX2GL9u2jdzlyEM3vfBH00J4Sx9AWeMCaL79a8D5jsYFoHMZAJwBwBkAnAHAGQCcAcAZAJwBwBkAnAHA" +
+                "GQCcAcAZAJwBwBkA3LgA2r9y1X6+o3EB6FzjAmj/ylX7+Y5GBTBluVPOuaYFoPONCWDSrVqDzjsigCnLPJpw7hEB6Dr1AUy4Rb9p" +
+                "P399ALpWdQDtt+evmueoDaB5af/ROk9tALpHZQCtt+VVjXPVBdC4pDO1zVcXgO5VFUDb7bhK05w1ATQt5Q4t89YEoIyKAFpuw90a" +
+                "5q4IQDnxABpuQVJ6/mgA6eFbJPcQfwIoKxaAt/+71D6qfsRAiqLlByQ1fwJIL/4qmrcigJZl3K1h7ngADUtISs/v28ACvg1UjG8D" +
+                "S6T24RMAzgDgDADOAOAMAM4A4AwAzgDgDADOAOAMAM4A4N7TB/hJy1emztT4AZhPADgDgDMAOAOAMwA4A4AzADgDgDMAOAOAMwA4" +
+                "A4AzALjaTwMbPzl7Ip8AcAYAZwBwBgBnAHAGAGcAcAYAZwBwBgBnAHAGAGcAcAYAZwBwBgBnAHAGAGcAcAYAZwBwBgBnAHAGAGcA" +
+                "cAYAZwBwsQCe+J9AX5Hah08AuGgAPgU+JfcQfwLQI0jPHw9gFSwhpWHuigBWyTLu1DJvxSGOnvzfQVpeeEmSJEkS0gfMBcBnW/f4" +
+                "7gAAAABJRU5ErkJggg==",
+            ["cancel"] =
+                "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAADgklEQVR4nO2bUXLrMAwDkXf/O7tfnpfJtGlqiyBAYb9biyRWTWrL" +
+                "QAghhBBCCCGEEEIIIYQQQgghhBBCCCGEAo7jONhr/mMveNLRrDLnPNhzaRGgq1lVXufAnAtdgM5mFfmpf9ZcqAJ0N6vGb30z5kIT" +
+                "QKFZJT7tt3ouFAFUmlXhr31WzqVcAKVmFbjaX9VcSgVQa7abu31VzKVMAMVmO1nVz+q5lAig2mwXq/tYeb3lAig320FV/auuu1QA" +
+                "9WbZVNb9eDweK66zVIBVRX2HmwQO4aPiIyAS+ISPqi+BO0vgFD4q/w3cUQK38FF9I2gnCRzDB+NW8A4SuIYP1sOgyRI4hw/m4+CJ" +
+                "EriHD/aBkEkSTAgfHUfCJkgwJXx0HQp1lmBS+Og8Fu4owbTw0SkAzCSYGD66BYCJBFPDh4IAEJdgcvhQEQCiEkwPH0oCQEyCHcKH" +
+                "mgAQkWCX8KEoAJol2Cl8qAqAJgl2Cx/KAoAswY7hQ10AkCTYNXwAkC7ume7n/ldQDx8OfwFOHIb5jEu9NgLAaKgudcJNABgMV72+" +
+                "V+wEgPCQVet6h6UAEBy2Wj2fYisAhIauUscVrAWAwPC717+LvQBoDME9fEwRAA1hTAgfkwQAMZQp4WOaACCEMyl8TBTA+b2ADkYJ" +
+                "MOHNIDZjBJj0biCTEQJMfDuYhb0A3SF0r38XawFUhq9SxxVsBVAbulo9n2IpgOqwVet6h50A6kNWr+8VKwFchutSJ5wEcBoqjOq1" +
+                "EMD13L6DBPICMMLfWQJpAZg7f1cJZAXo+LO/owSSAnR+5u8mgZwACl/4dpJASgCF8K/+/F9QkkBGAKXw7/7eJ6hIICGAYvirfv8d" +
+                "ChK0C6Ac/urrfEe3BK0COIRfdb1nOiVoE8Ap/OrrolGCFgEcw2dcv0MCugDO4TPWYUtAFWBC+Iz1mBLQBJgUPmNdlgQUASaGz1if" +
+                "IUG5AJPDP3GWoFSAHcI/cZWgTICdwj9xlKBEgB3DP3GTYLkAO4d/4iTBUgES/n9cJFgqgOM9+EocJFj+EeD0FI6B+qYo+RLo8Bye" +
+                "ifKmKPs3UPkkTgeqm6L0RpDiWbxOFDdF+a1gpdO4CqhtCsrDIIXz+EoobQra4+DON3IUUdkU1AMhHe/kKaOwKehHwphv5Tqw7abo" +
+                "Pg+vxvFEdy2hiYQfQgghhBBCCCGEEEIIIYQQQgghhBBu8wV++Zia38eADwAAAABJRU5ErkJggg==",
+        };
+
         private void LoadIcons()
         {
             _iconIds.Clear();
@@ -904,10 +977,15 @@ namespace Oxide.Plugins
             foreach (string slice in new[] { "ride", "lead", "stop", "milk", "cancel" })
             {
                 string file = Path.Combine(IconDir, slice + ".png");
-                if (!File.Exists(file)) continue;
+                if (!File.Exists(file) && DefaultIcons.TryGetValue(slice, out string encoded))
+                {
+                    try { File.WriteAllBytes(file, Convert.FromBase64String(encoded)); Puts($"Wrote the default icon {file}"); }
+                    catch (Exception ex) { PrintWarning($"Could not write the default icon {file}: {ex.Message}"); }
+                }
                 try
                 {
-                    byte[] bytes = File.ReadAllBytes(file);
+                    byte[] bytes = File.Exists(file) ? File.ReadAllBytes(file) : (DefaultIcons.TryGetValue(slice, out string fallback) ? Convert.FromBase64String(fallback) : null);
+                    if (bytes == null) continue;
                     uint crc = FileStorage.server.Store(bytes, FileStorage.Type.png, community.net.ID);
                     if (crc != 0) _iconIds[slice] = crc;
                 }

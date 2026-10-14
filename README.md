@@ -4,7 +4,7 @@ Lets players ride Rust's farm cows and bulls bareback, the way they ride horses:
 the normal movement keys, and a second player can get on behind as a **passenger**. The cow walks, jogs,
 runs or sprints with its own animations, tires like a horse, hurts what it runs into, and charges on
 command, kicks and moos on request. Two ride methods: the game's own horse bars via a hidden carrier
-horse (default), or saddle seats on the cow with the plugin's own display. Version 1.3.2.
+horse (default), or saddle seats on the cow with the plugin's own display. Version 1.3.3.
 
 1. [Installing, and where the files are](#1-installing-and-where-the-files-are)
 2. [What players experience](#2-what-players-experience)
@@ -24,9 +24,10 @@ horse (default), or saddle seats on the cow with the plugin's own display. Versi
 and tested on Rust build 2634 with Oxide 2.0.7801. Carbon is untested.
 
 1. Copy `RidableCows.cs` into `oxide/plugins/`.
-2. The console shows `Loaded plugin RidableCows v1.3.2`.
-3. Copy the `icons/` folder from this repository to `oxide/data/RidableCows/icons/` for the pie wheel
-   icons, or put your own PNGs there (section 3). Without them the wheel falls back to sprite paths.
+2. The console shows `Loaded plugin RidableCows v1.3.3`.
+3. On first load the plugin writes its built-in pie wheel icons to `oxide/data/RidableCows/icons/`
+   (the same files as this repository's `icons/` folder). Replace any of them with your own PNG to
+   change a slice's icon (section 3).
 
 Settings are in `oxide/config/RidableCows.json` (section 4). The plugin keeps no data file: rides
 exist only while someone is on a cow.
@@ -171,9 +172,10 @@ front. Riders are always put down on the ground beside the cow, never killed for
   when they wake up, which caches them); and the server cannot close a pie, only replace it. The cow's
   own long-press wheel entries cannot be added to (they are client-side attributes).
 - **Icons** are PNG files in `oxide/data/RidableCows/icons/` named `ride.png`, `lead.png`, `stop.png`,
-  `milk.png` and `cancel.png` (white on transparent reads best). They go into the game's file store
-  at every plugin load (the store is wiped on a server restart) and are sent to the wheel by image id.
-  A slice without a file falls back to a sprite path from the config. The shipped set has the game's
+  `milk.png` and `cancel.png` (white on transparent reads best). The five built-in ones are embedded in
+  the plugin and written to that folder whenever a file is missing, so deleting one restores the
+  default. They go into the game's file store at every plugin load (the store is wiped on a server
+  restart) and are sent to the wheel by image id. The shipped set has the game's
   own hand-and-rope lead glyph and a rider-on-cow drawn in the same style.
 - **Head zone:** the look's hit point in cow-local space decides head (forward of the "Head zone"
   setting) against body.
