@@ -34,6 +34,7 @@ namespace Oxide.Plugins
         private static readonly FieldInfo PlayStateField = typeof(RootMotionPlayer).GetField("currentPlayState", Private);
         private static readonly MethodInfo StopServerMethod = typeof(RootMotionPlayer).GetMethod("StopServer", Private);
         private static readonly FieldInfo CurrentSpeedField = typeof(RustNavMeshAgent).GetField("currentSpeed", Private);
+        private static readonly MethodInfo ToggleTick = typeof(BaseEntity).GetMethod("ToggleNetworkPositionTick", Private);
 
         // ------------------------------------------------------------------ config
 
@@ -60,10 +61,19 @@ namespace Oxide.Plugins
             public float CarrierLift = 3f;
 
             [JsonProperty("Carrier horse: where the rider sits on the cow (cow-local metres, before the lift)")]
-            public SeatSpot CarrierSpot = new SeatSpot(0f, -0.2f, -0.6f);
+            public SeatSpot CarrierSpot = new SeatSpot(0f, -0.2f, -0.2f);
+
+            [JsonProperty("Carrier horse: lead ahead of the cow while moving (seconds of travel; 0 = none, which rides best: a lead makes the rider jump up and forward on moving off)")]
+            public float CarrierLeadSeconds = 0f;
 
             [JsonProperty("Carrier horse: seconds after mounting before it is hidden")]
             public float CarrierHideDelay = 0.75f;
+
+            [JsonProperty("Carrier horse: spawn it hidden and only flash it visible after the mount (the client needs to see it once for the rider's pose)")]
+            public bool CarrierSpawnHidden = true;
+
+            [JsonProperty("Carrier horse: flash it visible this long after the mount (seconds; 0 = never show it)")]
+            public float CarrierFlash = 0f;
 
             [JsonProperty("Stop: deceleration when the driver lets go (m/s^2)")]
             public float StopDeceleration = 3f;
@@ -123,6 +133,15 @@ namespace Oxide.Plugins
 
             [JsonProperty("Seat tilt scale (1 = tilt with the ground, 0 = stay level)")]
             public float SeatPitchScale = 1f;
+
+            [JsonProperty("Seat ground gain: how much of the gap between the cow's root and the ground the seat follows (1 = all, 0 = none)")]
+            public float SeatGroundGain = 1f;
+
+            [JsonProperty("Seat height trim (metres, added to every seat; tune live with /ridablecow seat)")]
+            public float SeatTrim = 0f;
+
+            [JsonProperty("Seat height trim while moving (metres; the cow's body sits lower in its gaits; tune live with /ridablecow movetrim)")]
+            public float SeatMovingTrim = -0.1f;
 
             [JsonProperty("Height the cow's body pivots about when it tilts (metres)")]
             public float SeatPivotHeight = 0.6f;
@@ -224,8 +243,8 @@ namespace Oxide.Plugins
             [JsonProperty("Kick: stamina it costs (fraction of the bar)")]
             public float KickStaminaCost = 0.08f;
 
-            [JsonProperty("Moo key (RELOAD = R, or any Rust BUTTON name; blank = off)")]
-            public string MooKey = "RELOAD";
+            [JsonProperty("Moo button (FIRE_THIRD = middle mouse; any Rust BUTTON name; blank = off. Space dismounts and R reloads, so avoid JUMP and RELOAD. Any key works with: bind <key> cow.moo)")]
+            public string MooKey = "FIRE_THIRD";
         }
 
         protected override void LoadDefaultConfig() => _config = new Configuration();
@@ -285,12 +304,15 @@ namespace Oxide.Plugins
             public float Stamina = 1f;
             public bool Tired;
             // seats following the ground
-            public float SeatPitch, SeatLift;
+            public float SeatPitch, SeatLift, GroundGap;
             // ramming and charging
             public readonly Dictionary<ulong, float> RamCooldown = new Dictionary<ulong, float>();
             // method 2: the hidden carrier horse whose saddle the driver sits on
             public RidableHorse Carrier;
             public bool CarrierHidden;
+            public Vector3 CarrierSeatSpot;     // where the carrier's saddle sits on the cow (cow-local), before the ground follow
+            public Vector3 CarrierSeatLocal;    // the saddle's fixed offset from the horse root (never moved after spawn)
+            public Quaternion CarrierSeatLocalRot;
             public Vector3 RearSpot;            // the passenger's spot: the config's, pushed back behind a carrier saddle
             public Vector3 LastCowPos;
             // stopping: brake to a halt, then an idle clip (which pauses the agent until the driver moves again)
@@ -301,7 +323,7 @@ namespace Oxide.Plugins
             // rider tricks: a kick (double-tap Ctrl) and a moo (R)
             public RootMotionPlayer.PlayServerState Kick, Moo;
             public float KickHitAt, KickReadyAt, LastDuckTap;
-            public bool KickHit, KickRequested, MooRequested;
+            public bool KickHit, KickRequested, MooRequested, MooPending;
             public RootMotionPlayer.PlayServerState Charge;
             public float ChargeHitAt, ChargeReadyAt;
             public readonly HashSet<ulong> ChargeVictims = new HashSet<ulong>();   // hit once per charge
@@ -354,9 +376,7 @@ namespace Oxide.Plugins
                 PrintWarning($"Unknown mount key '{_config.MountKey}', using USE");
                 _mountButton = BUTTON.USE;
             }
-            if (string.IsNullOrEmpty(_config.MooKey)) _mooButton = null;
-            else if (Enum.TryParse(_config.MooKey, true, out BUTTON moo)) _mooButton = moo;
-            else { PrintWarning($"Unknown moo key '{_config.MooKey}', using RELOAD"); _mooButton = BUTTON.RELOAD; }
+            ApplyMooKey();
             _hitMask = MaskOf("Player (Server)", "Construction", "Deployed", "Default", "AI", "Vehicle Detailed");
             // A carrier horse's own fixed update (physics drive, ground alignment, clipping checks) would fight
             // its placement on the cow every tick: skip it. Its HUD update is a separate invoke and keeps running.
@@ -384,6 +404,14 @@ namespace Oxide.Plugins
                 CuiHelper.DestroyUi(player, WarmPanel);
                 if (_barsShown.ContainsKey(player.userID)) ShowBars(player, null);
             }
+        }
+
+        private void ApplyMooKey()
+        {
+            if (string.IsNullOrEmpty(_config.MooKey)) _mooButton = null;
+            else if (Enum.TryParse(_config.MooKey, true, out BUTTON moo)) _mooButton = moo;
+            else { PrintWarning($"Unknown moo key '{_config.MooKey}', using FIRE_THIRD"); _mooButton = BUTTON.FIRE_THIRD; }
+            if (_mooButton == BUTTON.JUMP) { PrintWarning("Moo key JUMP would clash with dismounting; using FIRE_THIRD"); _mooButton = BUTTON.FIRE_THIRD; }
         }
 
         private static bool VehicleFixedUpdatePrefix(RidableHorse __instance) => !Carriers.Contains(__instance);
@@ -598,7 +626,17 @@ namespace Oxide.Plugins
                 // Hidden before the client has set up the saddle pose, the rider sits at a wrong angle
                 ride.CarrierHidden = true;
                 var carrier = ride.Carrier;
-                timer.Once(_config.CarrierHideDelay, () => { if (carrier != null && !carrier.IsDestroyed) SetFlag(carrier, BaseEntity.Flags.Disabled, true); });
+                if (_config.CarrierSpawnHidden && _config.CarrierFlash > 0f)
+                {
+                    // Spawned hidden: flash it visible for a moment once the client has the mount, then hide again
+                    timer.Once(_config.CarrierHideDelay, () =>
+                    {
+                        if (carrier == null || carrier.IsDestroyed) return;
+                        SetFlag(carrier, BaseEntity.Flags.Disabled, false);
+                        timer.Once(Mathf.Max(0.05f, _config.CarrierFlash), () => { if (carrier != null && !carrier.IsDestroyed) SetFlag(carrier, BaseEntity.Flags.Disabled, true); });
+                    });
+                }
+                else if (!_config.CarrierSpawnHidden) timer.Once(_config.CarrierHideDelay, () => { if (carrier != null && !carrier.IsDestroyed) SetFlag(carrier, BaseEntity.Flags.Disabled, true); });
             }
             if (seat == ride.Front)
             {
@@ -640,6 +678,21 @@ namespace Oxide.Plugins
 
         private Vector3 CarrierPoint(Ride ride) => ride.Cow.transform.TransformPoint(_config.CarrierSpot.Vector) + Vector3.up * _config.CarrierLift;
 
+        // The horse's transform that puts its (fixed) saddle on the cow's back, tilted and lifted by the follow
+        private void CarrierPose(Ride ride, out Vector3 position, out Quaternion rotation)
+        {
+            var cow = ride.Cow.transform;
+            Vector3 pivot = new Vector3(0f, _config.SeatPivotHeight, 0f);
+            Quaternion tilt = _config.SeatFollowsGround ? Quaternion.Euler(ride.SeatPitch, 0f, 0f) : Quaternion.identity;
+            float lift = _config.SeatFollowsGround ? ride.SeatLift : 0f;
+            Vector3 seatLocal = pivot + tilt * (ride.CarrierSeatSpot - pivot) + Vector3.up * lift;
+            Vector3 seatWorld = cow.TransformPoint(seatLocal);
+            if (_config.CarrierLeadSeconds > 0f && ride.Moving) seatWorld += cow.forward * (CurrentSpeed(ride) * _config.CarrierLeadSeconds);
+            Quaternion seatRot = cow.rotation * tilt;
+            rotation = seatRot * Quaternion.Inverse(ride.CarrierSeatLocalRot);
+            position = seatWorld - rotation * ride.CarrierSeatLocal;
+        }
+
         // Method 2: a real horse, carried above the cow (never overlapping it: its body would shove the cow on
         // the client at every stop), kinematic, its own fixed update skipped, not parented (the client never
         // follows a parented horse) but placed on the cow 20 times a second. Its saddle seat is dropped back
@@ -654,6 +707,7 @@ namespace Oxide.Plugins
             horse.Spawn();
             if (horse.rigidBody != null) horse.rigidBody.isKinematic = true;
             Carriers.Add(horse);
+            if (_config.CarrierSpawnHidden) SetFlag(horse, BaseEntity.Flags.Disabled, true);
             var seat = horse.mountPoints != null && horse.mountPoints.Count > 0 ? horse.mountPoints[0].mountable : null;
             if (seat == null)
             {
@@ -662,8 +716,18 @@ namespace Oxide.Plugins
                 horse.Kill();
                 return SpawnSeat(ride, _config.FrontSeatPrefab, _config.FrontSeat.Vector);
             }
+            // The saddle hangs from a spine bone that animates on the client (the server's never moves): with the
+            // seat 3 m below the horse, every degree of that bone swings the rider centimetres, so the rider
+            // floats. Hang it from the horse's root instead, which only ever has the yaw we give it.
+            seat.SetParent(horse, 0u, worldPositionStays: true, sendImmediate: true);
             seat.transform.position += Vector3.down * _config.CarrierLift;
             seat.SendNetworkUpdateImmediate();
+            // From here on the seat never moves on the horse: a child's position updates are applied by the
+            // client as jumps, so following the terrain by moving the seat makes the rider jitter. The horse is
+            // moved instead, so that the seat lands where the follow wants it; the client smooths the horse.
+            ride.CarrierSeatSpot = cow.transform.InverseTransformPoint(seat.transform.position);
+            ride.CarrierSeatLocal = horse.transform.InverseTransformPoint(seat.transform.position);
+            ride.CarrierSeatLocalRot = Quaternion.Inverse(horse.transform.rotation) * seat.transform.rotation;
             horse.InitializeHealth(cow.health, cow.MaxHealth());
             horse.currentMaxStamina = horse.maxStamina;
             horse.currentStamina = horse.maxStamina;
@@ -687,9 +751,8 @@ namespace Oxide.Plugins
                 any = true;
                 var t = horse.transform;
                 if (horse.rigidBody != null && !horse.rigidBody.isKinematic) horse.rigidBody.isKinematic = true;
-                Vector3 wp = CarrierPoint(ride);
-                Quaternion wr = cow.transform.rotation;
-                if ((t.position - wp).sqrMagnitude > 0.00001f || Quaternion.Angle(t.rotation, wr) > 0.2f)
+                CarrierPose(ride, out Vector3 wp, out Quaternion wr);
+                if ((t.position - wp).sqrMagnitude > 0.00001f || Quaternion.Angle(t.rotation, wr) > 0.1f)
                 {
                     t.SetPositionAndRotation(wp, wr);
                     if (horse.rigidBody != null) { horse.rigidBody.position = wp; horse.rigidBody.rotation = wr; }
@@ -1162,7 +1225,16 @@ namespace Oxide.Plugins
                 if (ride.Kick != null) return;
             }
             if (ride.KickRequested) { ride.KickRequested = false; if (TryStartKick(ride)) return; }
-            if (ride.MooRequested) { ride.MooRequested = false; TryMoo(ride); }
+            // A moo is a whole action: the cow eases to a stop, moos, and only then answers the keys again
+            if (ride.MooRequested) { ride.MooRequested = false; if (ride.Moo == null && !ride.MooPending) ride.MooPending = true; }
+            if (ride.Moo != null && ride.Moo.isPlaying) { ride.Gait = "Moo"; return; }
+            if (ride.MooPending)
+            {
+                if (ride.Moving || ride.Stopping) { SoftStop(ride); return; }
+                ride.MooPending = false;
+                TryMoo(ride);
+                if (ride.Moo != null) { ride.Gait = "Moo"; return; }
+            }
 
             int turn = ((keys & Keys.Right) != 0 ? 1 : 0) - ((keys & Keys.Left) != 0 ? 1 : 0);
             bool forward = (keys & Keys.Forward) != 0 && (keys & Keys.Back) == 0;
@@ -1364,6 +1436,7 @@ namespace Oxide.Plugins
                 case "Run": change = -dt / (2f * _config.SprintSeconds); break;
                 case "Charge":
                 case "Kick": change = 0f; break;
+                case "Moo": change = 2f * dt / _config.RecoverSeconds; break;
                 case "Stop":
                 case "Blocked": change = 2f * dt / _config.RecoverSeconds; break;
                 case "Reverse": change = dt / _config.RecoverSeconds; break;
@@ -1475,6 +1548,7 @@ namespace Oxide.Plugins
             if (fsm == null || fsm.kick == null || !fsm.kick.HasAnimation) return false;
             ClearIdle(ride);
             HardStop(ride);
+            ride.MooPending = false;
             if (ride.Moo != null) ride.Anim.StopServerAndReturnToPool(ref ride.Moo);
             ride.Kick = ride.Anim.PlayServerAndTakeFromPool(fsm.kick.Animation);
             if (ride.Kick == null) return false;
@@ -1503,7 +1577,7 @@ namespace Oxide.Plugins
             ride.Gait = "Stop";
         }
 
-        // R: one of the cow's own moo clips. Standing, it plays in full; moving, the cow keeps walking under it.
+        // One of the cow's own moo clips, played standing (it pauses the agent until it ends)
         private void TryMoo(Ride ride)
         {
             if (ride.Anim == null || ride.Charge != null || ride.Kick != null || (ride.Moo != null && ride.Moo.isPlaying)) return;
@@ -1514,7 +1588,7 @@ namespace Oxide.Plugins
             if (moos.Count == 0) return;
             ClearIdle(ride);
             if (ride.Moo != null) ride.Anim.StopServerAndReturnToPool(ref ride.Moo);
-            ride.Moo = ride.Anim.PlayServerAndTakeFromPool(moos[UnityEngine.Random.Range(0, moos.Count)], 1f, pauseAgent: !ride.Moving);
+            ride.Moo = ride.Anim.PlayServerAndTakeFromPool(moos[UnityEngine.Random.Range(0, moos.Count)]);
         }
 
         // Running into things at speed hurts them (players, animals, wooden structures)
@@ -1602,7 +1676,8 @@ namespace Oxide.Plugins
 
         // ------------------------------------------------------------------ seats on the cow's back
 
-        private static readonly int GroundMask = LayerMask.GetMask("Terrain", "World", "Construction");
+        // What a cow stands on: terrain, rocks and monuments, buildings, and deployed things (crates, boxes, troughs)
+        private static readonly int GroundMask = LayerMask.GetMask("Terrain", "World", "Construction", "Deployed", "Default");
 
         private static float GroundHeight(Vector3 at, float fallback)
         {
@@ -1617,12 +1692,19 @@ namespace Oxide.Plugins
         {
             var t = ride.Cow.transform;
             Vector3 p = t.position, f = t.forward;
-            float front = GroundHeight(p + f * 0.9f, p.y), rear = GroundHeight(p - f * 0.9f, p.y);
+            float front = GroundHeight(p + f * 0.9f, p.y), rear = GroundHeight(p - f * 0.9f, p.y), centre = GroundHeight(p, p.y);
             float pitch = Mathf.Clamp(-Mathf.Atan2(front - rear, 1.8f) * Mathf.Rad2Deg * _config.SeatPitchScale, -25f, 25f);
-            float lift = Mathf.Clamp((front + rear) * 0.5f - p.y, -0.35f, 0.35f);
-            ride.SeatPitch = Mathf.Lerp(ride.SeatPitch, pitch, 0.35f);
-            ride.SeatLift = Mathf.Lerp(ride.SeatLift, lift, 0.35f);
-            if (ride.Carrier == null) PlaceSeat(ride, ride.Front, _config.FrontSeat.Vector);
+            // The cow's root can ride well above what it stands on (the navmesh sits up to a metre over the
+            // ground in places) while the client draws the cow with its feet down: follow the gap under the
+            // root. The hooves only set the tilt: with one hoof on a rock and the other on the ground beside it,
+            // their average is nowhere near where the body is drawn.
+            ride.GroundGap = centre - p.y;
+            float lift = Mathf.Clamp(ride.GroundGap, -1.5f, 1f) * _config.SeatGroundGain + _config.SeatTrim;
+            // In its gaits the cow's body is drawn lower than standing: trim by speed (full trim from a walk up)
+            lift += _config.SeatMovingTrim * Mathf.Clamp01(CurrentSpeed(ride) / Mathf.Max(0.1f, ride.Agent.GetSpeedForGait(RustNavMeshAgent.Speeds.Walk)));
+            ride.SeatPitch = Mathf.Lerp(ride.SeatPitch, pitch, 0.25f);
+            ride.SeatLift = Mathf.Lerp(ride.SeatLift, lift, 0.25f);
+            if (ride.Carrier == null) PlaceSeat(ride, ride.Front, _config.FrontSeat.Vector);   // a carrier's seat is placed through the horse
             PlaceSeat(ride, ride.Rear, ride.RearSpot);
         }
 
@@ -1722,6 +1804,7 @@ namespace Oxide.Plugins
                 case BUTTON.USE: return "E";
                 case BUTTON.RELOAD: return "R";
                 case BUTTON.FIRE_THIRD: return "Middle mouse";
+                case BUTTON.JUMP: return "Space";
                 default: return button.ToString();
             }
         }
@@ -1944,11 +2027,65 @@ namespace Oxide.Plugins
                 Reply(player, $"Carrier horse offset now {lift:0.0} m ({(lift < 0 ? "under the ground" : "above the cow")}); applies to the next mount.");
                 return;
             }
+            if (args.Length >= 3 && args[0].ToLower() == "config" && args[1].ToLower() == "mookey")
+            {
+                string key = args[2].ToLower() == "off" ? "" : args[2].ToUpper();
+                if (key != "" && !Enum.TryParse(key, true, out BUTTON _)) { Reply(player, "Unknown button. Examples: FIRE_THIRD (middle mouse), FIRE_SECONDARY (right mouse), or off. Space dismounts and R reloads. Any key: bind <key> cow.moo"); return; }
+                _config.MooKey = key;
+                SaveConfig();
+                ApplyMooKey();
+                Reply(player, _mooButton.HasValue ? $"Moo key now {KeyName(_mooButton.Value)}." : "Moo is off.");
+                return;
+            }
             if (args.Length >= 3 && args[0].ToLower() == "config" && args[1].ToLower() == "decel" && float.TryParse(args[2], out float decel) && decel > 0f)
             {
                 _config.StopDeceleration = decel;
                 SaveConfig();
                 Reply(player, $"Stop deceleration now {decel:0.0} m/s² (a jog eases out over {3.16f * 3.16f / (2f * decel):0.0} m).");
+                return;
+            }
+            if (args.Length >= 1 && args[0].ToLower() == "issue")
+            {
+                // /ridablecow issue <what you see>: a full snapshot of the ride into the log, for examining later
+                string what = args.Length > 1 ? string.Join(" ", args, 1, args.Length - 1) : "(no description)";
+                Puts(IssueSnapshot(player, what));
+                Reply(player, "Logged. Thanks.");
+                return;
+            }
+            if (args.Length >= 2 && args[0].ToLower() == "lead" && float.TryParse(args[1], out float lead))
+            {
+                _config.CarrierLeadSeconds = Mathf.Max(0f, lead);
+                SaveConfig();
+                Reply(player, $"carrier leads the cow by {_config.CarrierLeadSeconds:0.00} s of travel while moving.");
+                return;
+            }
+            if (args.Length >= 4 && args[0].ToLower() == "spot" && float.TryParse(args[1], out float sx) && float.TryParse(args[2], out float sy) && float.TryParse(args[3], out float sz))
+            {
+                // Move the rider's spot on the cow, on the current ride too
+                var old = _config.CarrierSpot.Vector;
+                _config.CarrierSpot = new SeatSpot(sx, sy, sz);
+                SaveConfig();
+                foreach (var r in _rides.Values) if (r.Carrier != null) r.CarrierSeatSpot += _config.CarrierSpot.Vector - old;
+                Reply(player, $"rider spot on the cow now {_config.CarrierSpot} (x right, y up, z forward).");
+                return;
+            }
+            if (args.Length >= 2 && args[0].ToLower() == "movetrim" && float.TryParse(args[1], out float moveTrim))
+            {
+                _config.SeatMovingTrim = moveTrim;
+                SaveConfig();
+                Reply(player, $"seat trim while moving {moveTrim:+0.00;-0.00} m (standing trim {_config.SeatTrim:+0.00;-0.00}).");
+                return;
+            }
+            if (args.Length >= 2 && args[0].ToLower() == "seat")
+            {
+                // Live calibration: /ridablecow seat <trim m> [gain]; shows what the follow sees on your ride
+                if (!float.TryParse(args[1], out float trim)) { Reply(player, "/ridablecow seat <trim metres> [ground gain 0..1]"); return; }
+                _config.SeatTrim = trim;
+                if (args.Length >= 3 && float.TryParse(args[2], out float gain)) _config.SeatGroundGain = Mathf.Clamp01(gain);
+                SaveConfig();
+                var mine = RideOfSeat(player.GetMounted());
+                Reply(player, $"seat trim {_config.SeatTrim:+0.00;-0.00} m, ground gain {_config.SeatGroundGain:0.00}" +
+                              (mine == null ? "" : $" | your cow: root {mine.Cow.transform.position.y:0.00}, ground gap {mine.GroundGap:+0.00} (root above ground), lift applied {mine.SeatLift:+0.00}, pitch {mine.SeatPitch:0.0}"));
                 return;
             }
             if (args.Length >= 1 && args[0].ToLower() == "spawn")
@@ -1968,7 +2105,7 @@ namespace Oxide.Plugins
                 Reply(player, $"{_iconIds.Count} custom icon(s) loaded and sent to everyone's cache: {string.Join(", ", _iconIds.Keys)}. Give it a few seconds, then /ridablecow pie.");
                 return;
             }
-            Reply(player, $"Ride method is {_config.RideMethod} ({MethodName(_config.RideMethod)}).\n/ridablecow config method 1|2  (1 = seats on the cow with the plugin's bars, 2 = hidden carrier horse with the game's horse bars; applies to the next mount)\n/ridablecow config lift <m> · /ridablecow config decel <m/s²> · /ridablecow spawn [bull] · /ridablecow reload icons");
+            Reply(player, $"Ride method is {_config.RideMethod} ({MethodName(_config.RideMethod)}).\n/ridablecow config method 1|2  (1 = seats on the cow with the plugin's bars, 2 = hidden carrier horse with the game's horse bars; applies to the next mount)\n/ridablecow config lift <m> · /ridablecow config decel <m/s²> · /ridablecow config mookey <BUTTON|off> · /ridablecow spawn [bull] · /ridablecow reload icons\nTuning from the saddle: /ridablecow seat <trim> [gain] · movetrim <m> · spot <x> <y> <z> · lead <s> · issue <what you see>");
         }
 
         private static string MethodName(int method) => method == 2 ? "carrier horse, game's horse bars" : "saddle seats, plugin bars";
@@ -2017,12 +2154,97 @@ namespace Oxide.Plugins
             arg.ReplyWith($"ended {n} ride(s)");
         }
 
+        // ridablecows.ground <x> <y> <z> [yaw]: what the seat follow sees at a spot (heightmap, raycast, hoof points)
+        [ConsoleCommand("ridablecows.ground")]
+        private void CmdGround(ConsoleSystem.Arg arg)
+        {
+            if (arg.Connection != null && !arg.IsAdmin) return;
+            if (!arg.HasArgs(3) || !float.TryParse(arg.GetString(0), out float x) || !float.TryParse(arg.GetString(1), out float y) || !float.TryParse(arg.GetString(2), out float z)) { arg.ReplyWith("ridablecows.ground x y z [yaw]"); return; }
+            float yaw = float.TryParse(arg.GetString(3, "0"), out float yw) ? yw : 0f;
+            Vector3 p = new Vector3(x, y, z); Vector3 f = Quaternion.Euler(0f, yaw, 0f) * Vector3.forward;
+            var lines = new List<string>();
+            int broad = ~(MaskOf("Player (Server)", "AI", "Vehicle Detailed", "Vehicle World", "Vehicle Large", "Trigger", "Water", "Ragdoll", "Physics Debris", "Prevent Building", "Prevent Movement", "Ignore Raycast", "UI"));
+            foreach (var (name, at) in new[] { ("root", p), ("front hoof", p + f * 0.9f), ("rear hoof", p - f * 0.9f) })
+            {
+                float hm = TerrainMeta.HeightMap.GetHeight(at);
+                bool hit = Physics.Raycast(at + Vector3.up * 1.5f, Vector3.down, out RaycastHit h, 3.5f, GroundMask, QueryTriggerInteraction.Ignore);
+                lines.Add($"{name} at {at}: heightmap {hm:0.00} (root y - hm = {y - hm:+0.00}), raycast {(hit ? $"{h.point.y:0.00} on {h.collider.name} layer {LayerMask.LayerToName(h.collider.gameObject.layer)} (root y - hit = {y - h.point.y:+0.00})" : "nothing")}");
+                // everything solid, from well above: what is the topmost thing under this point?
+                var all = Physics.RaycastAll(at + Vector3.up * 3f, Vector3.down, 6f, broad, QueryTriggerInteraction.Ignore);
+                Array.Sort(all, (a, b) => a.distance.CompareTo(b.distance));
+                var seen = new List<string>();
+                foreach (var hh in all) seen.Add($"{hh.collider.name}[{LayerMask.LayerToName(hh.collider.gameObject.layer)}] y={hh.point.y:0.00}");
+                lines.Add($"    all solids under it: {(seen.Count == 0 ? "nothing" : string.Join(" | ", seen))}");
+            }
+            arg.ReplyWith(string.Join("\n", lines));
+        }
+
+        // ridablecows.trim <trim> [gain]: console twin of /ridablecow seat
+        [ConsoleCommand("ridablecows.trim")]
+        private void CmdSeatTrim(ConsoleSystem.Arg arg)
+        {
+            if (arg.Connection != null && !arg.IsAdmin) return;
+            if (float.TryParse(arg.GetString(0, ""), out float trim)) _config.SeatTrim = trim;
+            if (float.TryParse(arg.GetString(1, ""), out float gain)) _config.SeatGroundGain = Mathf.Clamp01(gain);
+            SaveConfig();
+            arg.ReplyWith($"seat trim {_config.SeatTrim:+0.00;-0.00} m, ground gain {_config.SeatGroundGain:0.00}");
+        }
+
+        // Everything about the player's ride and the ground under it, in one log entry
+        private string IssueSnapshot(BasePlayer player, string what)
+        {
+            var lines = new List<string> { $"[issue] {player.displayName}: \"{what}\"" };
+            var seat = player.GetMounted();
+            var ride = RideOfSeat(seat);
+            lines.Add($"  player {player.transform.position} mounted on {(seat == null ? "-" : seat.ShortPrefabName)}");
+            lines.Add($"  config: method {_config.RideMethod}, follow {_config.SeatFollowsGround} gain {_config.SeatGroundGain:0.00} trim {_config.SeatTrim:+0.00} moving trim {_config.SeatMovingTrim:+0.00} pitch scale {_config.SeatPitchScale:0.00} pivot {_config.SeatPivotHeight:0.00}, carrier lift {_config.CarrierLift:0.00} spot {_config.CarrierSpot}, front seat {_config.FrontSeat}");
+            if (ride == null)
+            {
+                var looked = CowAtLook(player, 10f, out bool head);
+                if (looked != null) lines.Add($"  looking at cow {looked.net.ID} {CowName(looked)} at {looked.transform.position} head={head}");
+                return string.Join("\n", lines);
+            }
+            var cow = ride.Cow; var t = cow.transform; Vector3 p = t.position;
+            lines.Add($"  cow {cow.net.ID} {CowName(cow)} root {p} yaw {t.eulerAngles.y:0} gait {ride.Gait} speed {CurrentSpeed(ride):0.00} moving={ride.Moving} stopping={ride.Stopping} idle={(ride.Idle != null && ride.Idle.isPlaying)} charge={(ride.Charge != null)} kick={(ride.Kick != null)}");
+            lines.Add($"  follow: ground gap {ride.GroundGap:+0.00} (root above ground), lift applied {ride.SeatLift:+0.00}, pitch {ride.SeatPitch:0.0}");
+            foreach (var (name, at) in new[] { ("root", p), ("front hoof", p + t.forward * 0.9f), ("rear hoof", p - t.forward * 0.9f) })
+            {
+                float hm = TerrainMeta.HeightMap.GetHeight(at);
+                bool hit = Physics.Raycast(at + Vector3.up * 1.5f, Vector3.down, out RaycastHit h, 3.5f, GroundMask, QueryTriggerInteraction.Ignore);
+                lines.Add($"  {name}: heightmap {hm:0.00} ({p.y - hm:+0.00} below root), raycast {(hit ? $"{h.point.y:0.00} ({p.y - h.point.y:+0.00} below root) on {h.collider.name} [{LayerMask.LayerToName(h.collider.gameObject.layer)}]" : "nothing")}");
+            }
+            foreach (var (name, st) in new[] { ("front seat", ride.Front), ("rear seat", ride.Rear) })
+            {
+                if (st == null || st.IsDestroyed) continue;
+                Vector3 local = t.InverseTransformPoint(st.transform.position);
+                lines.Add($"  {name} {st.ShortPrefabName} world {st.transform.position} cow-local {local} ({local.y:+0.00} above root) parent {st.GetParentEntity()?.ShortPrefabName} bone {st.parentBone} rider {st.GetMounted()?.displayName ?? "-"}");
+            }
+            if (ride.Carrier != null)
+                lines.Add($"  carrier {ride.Carrier.net.ID} at {ride.Carrier.transform.position} ({ride.Carrier.transform.position.y - p.y:+0.00} above root) hidden={ride.Carrier.HasFlag(BaseEntity.Flags.Disabled)} seat spot {ride.CarrierSeatSpot}");
+            return string.Join("\n", lines);
+        }
+
         [ConsoleCommand("ridablecows.method")]
         private void CmdMethod(ConsoleSystem.Arg arg)
         {
             if (arg.Connection != null && !arg.IsAdmin) return;
             if (int.TryParse(arg.GetString(0, ""), out int method) && (method == 1 || method == 2)) arg.ReplyWith(SetMethod(method));
             else arg.ReplyWith($"ridablecows.method 1|2 (now {_config.RideMethod}: {MethodName(_config.RideMethod)})");
+        }
+
+        // Bindable from the saddle: bind <key> cow.moo / cow.kick
+        [ConsoleCommand("cow.moo")]
+        private void CmdConsoleMoo(ConsoleSystem.Arg arg)
+        {
+            var ride = RideOfSeat(arg.Player()?.GetMounted());
+            if (ride != null && ride.Front?.GetMounted() == arg.Player()) ride.MooRequested = true;
+        }
+
+        [ConsoleCommand("cow.kick")]
+        private void CmdConsoleKick(ConsoleSystem.Arg arg)
+        {
+            var ride = RideOfSeat(arg.Player()?.GetMounted());
+            if (ride != null && ride.Front?.GetMounted() == arg.Player()) ride.KickRequested = true;
         }
 
         // Bindable: bind <key> cow.ride
@@ -2054,7 +2276,7 @@ namespace Oxide.Plugins
             {
                 var cow = ride.Cow;
                 lines.Add($"  cow {cow.net.ID} {CowName(cow)} at {cow.transform.position} yaw {cow.transform.eulerAngles.y:0} heading {ride.Heading:0} " +
-                          $"gait {ride.Gait} speed {CurrentSpeed(ride):0.00} stamina {ride.Stamina:0.00}{(ride.Tired ? " tired" : "")} charges {ride.Charges} hits {ride.Hits} " +
+                          $"gait {ride.Gait} speed {CurrentSpeed(ride):0.00} gap {ride.GroundGap:+0.00} stamina {ride.Stamina:0.00}{(ride.Tired ? " tired" : "")} charges {ride.Charges} hits {ride.Hits} " +
                           $"carrier {(ride.Carrier == null ? "-" : $"{ride.Carrier.net.ID} {(ride.Carrier.HasFlag(BaseEntity.Flags.Disabled) ? "hidden" : "visible")} hp {ride.Carrier.health:0} stam {ride.Carrier.currentStamina:0.0}")} stopping {ride.Stopping} idle {(ride.Idle != null && ride.Idle.isPlaying)} " +
                           $"seat pitch {ride.SeatPitch:0.0} lift {ride.SeatLift:0.00} driver {ride.Front?.GetMounted()?.displayName ?? "-"} " +
                           $"passenger {ride.Rear?.GetMounted()?.displayName ?? "-"} fsm {(FsmRunningField != null && (bool)FsmRunningField.GetValue(ride.Fsm) ? "on" : "off")}");
@@ -2296,8 +2518,10 @@ namespace Oxide.Plugins
                     Check("carrier horse spawned, kinematic and frozen", !horse.IsDestroyed && Carriers.Contains(horse) && (horse.rigidBody == null || horse.rigidBody.isKinematic));
                     Check("carrier carried clear of the cow, not parented", !horse.HasParent() && Mathf.Abs(horse.transform.position.y - _cow.transform.position.y - _p._config.CarrierLift - _p._config.CarrierSpot.Y) < 0.3f, $"horse y {horse.transform.position.y:0.00} cow y {_cow.transform.position.y:0.00} offset {_p._config.CarrierLift}");
                     Check("driver sits on the carrier's saddle, on the cow's back", ride.Front.GetParentEntity() == horse && _bot1.GetMounted() == ride.Front && Mathf.Abs(ride.Front.transform.position.y - _cow.transform.position.y) < 1.5f, $"seat y {ride.Front.transform.position.y:0.00} cow y {_cow.transform.position.y:0.00}");
+                    Check("carrier's saddle hangs from the horse root, not an animated bone", ride.Front.parentBone == 0 && ride.Front.transform.parent == horse.transform, $"bone {ride.Front.parentBone}, local {ride.Front.transform.localPosition}");
                     Check("the game's horse bars read the cow's health", Mathf.Abs(horse.health - _cow.health) < 1f && Mathf.Abs(horse.MaxHealth() - _cow.MaxHealth()) < 1f, $"horse {horse.health:0}/{horse.MaxHealth():0} cow {_cow.health:0}/{_cow.MaxHealth():0}");
-                    _p.timer.Once(_p._config.CarrierHideDelay + 0.5f, () => Check("carrier hidden after the mount", horse.IsDestroyed || horse.HasFlag(BaseEntity.Flags.Disabled)));
+                    if (_p._config.CarrierSpawnHidden) Check("carrier spawned hidden", horse.HasFlag(BaseEntity.Flags.Disabled));
+                    _p.timer.Once(_p._config.CarrierHideDelay + _p._config.CarrierFlash + 0.5f, () => Check("carrier hidden after the mount", horse.IsDestroyed || horse.HasFlag(BaseEntity.Flags.Disabled)));
                 }
                 else
                 {
@@ -2326,7 +2550,11 @@ namespace Oxide.Plugins
                     Check("sprinting drains stamina", r != null && r.Stamina < 0.95f, $"stamina {r?.Stamina:0.00}");
                     if (r?.Carrier != null)
                     {
-                        Check("carrier follows the cow", Vector3.Distance(r.Carrier.transform.position, _p.CarrierPoint(r)) < 0.5f, $"off by {Vector3.Distance(r.Carrier.transform.position, _p.CarrierPoint(r)):0.00} m");
+                        _p.CarrierPose(r, out Vector3 wantPos, out _);
+                        Check("carrier follows the cow", Vector3.Distance(r.Carrier.transform.position, wantPos) < 0.5f, $"off by {Vector3.Distance(r.Carrier.transform.position, wantPos):0.00} m");
+                        float seatUp = _cow.transform.InverseTransformPoint(r.Front.transform.position).y;
+                        float seatDrift = Vector3.Distance(r.Carrier.transform.InverseTransformPoint(r.Front.transform.position), r.CarrierSeatLocal);
+                        Check("carrier seat stays on the cow's back while moving, fixed on its horse", seatUp > 0.3f && seatUp < 1.4f && seatDrift < 0.01f, $"seat {seatUp:0.00} m above the cow's root, pitch {r.SeatPitch:0.0}, drift on the horse {seatDrift:0.000} m");
                         Check("the game's stamina bar reads the ride's stamina", Mathf.Abs(r.Carrier.currentStamina / r.Carrier.maxStamina - r.Stamina) < 0.05f, $"horse {r.Carrier.currentStamina / r.Carrier.maxStamina:0.00} ride {r.Stamina:0.00}");
                     }
                     Check("rider follows the cow", _bot1.GetMounted() != null && Vector3.Distance(_bot1.transform.position, _cow.transform.position) < 2.5f,
