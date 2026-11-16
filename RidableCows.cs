@@ -13,7 +13,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("RidableCows", "Lucien", "1.3.3")]
+    [Info("RidableCows", "Lucien", "1.3.4")]
     [Description("Ride cows bareback like horses: driver and passenger, stamina, ramming, bull charges, and the game's horse HUD via a hidden carrier horse")]
     public class RidableCows : RustPlugin
     {
@@ -1049,7 +1049,7 @@ namespace Oxide.Plugins
                 {
                     byte[] bytes = File.Exists(file) ? File.ReadAllBytes(file) : (DefaultIcons.TryGetValue(slice, out string fallback) ? Convert.FromBase64String(fallback) : null);
                     if (bytes == null) continue;
-                    uint crc = FileStorage.server.Store(bytes, FileStorage.Type.png, community.net.ID);
+                    uint crc = FileStorage.server.StoreByCrc(community.net.ID, FileStorage.Type.png, bytes);
                     if (crc != 0) _iconIds[slice] = crc;
                 }
                 catch (Exception ex) { PrintWarning($"Icon {file} not loaded: {ex.Message}"); }
@@ -2131,7 +2131,7 @@ namespace Oxide.Plugins
             {
                 var cow = CowAtLook(pl, 10f);
                 if (cow == null) { lines.Add($"{pl.displayName}: not looking at a cow"); continue; }
-                lines.Add($"{pl.displayName} looks at {cow.net.ID} {CowName(cow)}: trust {cow.TrustOf(pl):0}s trusts={cow.TrustsToHandle(pl)} canLead={cow.CanLead(pl)} leading={cow.IsLeading()} leadable={cow.IsLeadable} sore={cow.IsSoreAt(pl)} milk={cow.CanBeMilked(pl)} flags {cow.flags}");
+                lines.Add($"{pl.displayName} looks at {cow.net.ID} {CowName(cow)}: trust {cow.TrustOf(pl):0}s trusts={cow.TrustsToHandle(pl)} canLead={cow.CanLead(pl)} leading={cow.IsLeading()} leadTrusted={cow.LeadTrusted} sore={cow.IsSoreAt(pl)} milk={cow.CanBeMilked(pl)} flags {cow.flags}");
             }
             arg.ReplyWith(string.Join("\n", lines));
         }

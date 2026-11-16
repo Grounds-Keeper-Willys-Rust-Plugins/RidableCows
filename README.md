@@ -4,7 +4,7 @@ Lets players ride Rust's farm cows and bulls bareback, the way they ride horses:
 the normal movement keys, and a second player can get on behind as a **passenger**. The cow walks, jogs,
 runs or sprints with its own animations, tires like a horse, hurts what it runs into, and charges on
 command, kicks and moos on request. Two ride methods: the game's own horse bars via a hidden carrier
-horse (default), or saddle seats on the cow with the plugin's own display. Version 1.3.3.
+horse (default), or saddle seats on the cow with the plugin's own display. Version 1.3.4.
 
 1. [Installing, and where the files are](#1-installing-and-where-the-files-are)
 2. [What players experience](#2-what-players-experience)
@@ -24,7 +24,7 @@ horse (default), or saddle seats on the cow with the plugin's own display. Versi
 and tested on Rust build 2634 with Oxide 2.0.7801. Carbon is untested.
 
 1. Copy `RidableCows.cs` into `oxide/plugins/`.
-2. The console shows `Loaded plugin RidableCows v1.3.3`.
+2. The console shows `Loaded plugin RidableCows v1.3.4`.
 3. On first load the plugin writes its built-in pie wheel icons to `oxide/data/RidableCows/icons/`
    (the same files as this repository's `icons/` folder). Replace any of them with your own PNG to
    change a slice's icon (section 3).
